@@ -866,6 +866,10 @@ def test_db():
     except Exception as e:
         return jsonify({"database_connected": False, "error": str(e)}), 500
 
+@app.route("/logout_on_reload", methods=["POST"])
+def logout_on_reload():
+    session.clear()
+    return ("", 204)
 
 @app.route("/healthz")
 def healthz():
