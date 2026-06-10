@@ -229,7 +229,7 @@ let chatExpired = false;
         scrollToBottom();
       }
 
-      function addBotMessage(text) {
+      function addBotMessage(text, shouldScroll = true) {
         const el = document.createElement("div");
         el.classList.add("bot-message-container");
 
@@ -239,7 +239,12 @@ let chatExpired = false;
         `;
 
         messagesContainer.appendChild(el);
-        scrollToBottom();
+
+        if (shouldScroll) {
+          scrollToBottom();
+        } else {
+          el.scrollIntoView({ block: "start" });
+        }
       }
 
       function showTypingIndicator() {
@@ -301,15 +306,22 @@ if (data.max_study_day) maxStudyDay = Number(data.max_study_day);
 updateHeader();
 
 if (data.chat_history && data.chat_history.length > 0) {
-  data.chat_history.forEach(msg => {
+  data.chat_history.forEach((msg, index) => {
+    const isLastMessage = index === data.chat_history.length - 1;
+    const isFinalDayClosingMessage =
+      Number(data.study_day) === 5 &&
+      data.expired &&
+      msg.role === "assistant" &&
+      isLastMessage;
+
     if (msg.role === "user") {
       addUserMessage(msg.content);
     } else if (msg.role === "assistant") {
-      addBotMessage(msg.content);
+      addBotMessage(msg.content, !isFinalDayClosingMessage);
     }
   });
 } else if (data.reply) {
-  addBotMessage(data.reply);
+  addBotMessage(data.reply, !(Number(data.study_day) === 5 && data.expired));
 } else {
   addBotMessage("Hallo, ich bin Lumi. Ich wurde als Chat-Bot für Themen aus dem Bereich psychische Gesundheit entwickelt. Ich werde dich in den nächsten Tagen ein Stück begleiten und mit dir über Themen rund um psychische Gesundheit, Stress und Wohlbefinden sprechen. Du kannst dabei ganz offen erzählen, was dich beschäftigt, was dir guttut oder was dir vielleicht gerade schwerfällt. Wer bist Du und wie geht es Dir heute?");
 }
@@ -363,7 +375,7 @@ if (!response.ok) {
   }
 } else {
   if (data.reply) {
-    addBotMessage(data.reply);
+    addBotMessage(data.reply, !(Number(data.study_day) === 5 && data.expired));
   }
   if (data.expired) {
     finishClosedChat();
