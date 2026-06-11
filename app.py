@@ -32,6 +32,7 @@ SEAFILE_BASE_URL = os.environ.get("SEAFILE_BASE_URL", "").strip().rstrip("/")
 SEAFILE_TOKEN = os.environ.get("SEAFILE_TOKEN", "").strip()
 SEAFILE_REPO_ID = os.environ.get("SEAFILE_REPO_ID", "").strip()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+SEAFILE_DIR = "/Gruppe 1/High_SD"
 
 # Gesprächsdauer: 7 Minuten 30 Sekunden.
 # Nach Ablauf wird nicht automatisch beendet.
@@ -132,7 +133,7 @@ def get_memory_filename():
 
 
 def get_file_path(filename):
-    return f"/{filename}"
+    return f"{SEAFILE_DIR.rstrip('/')}/{filename}"
 
 
 def seafile_headers():
@@ -157,7 +158,12 @@ def ensure_seafile_config():
 def get_upload_link():
     ensure_seafile_config()
     url = f"{SEAFILE_BASE_URL}/api2/repos/{SEAFILE_REPO_ID}/upload-link/"
-    response = requests.get(url, headers=seafile_headers(), timeout=30)
+    response = requests.get(
+        url,
+        headers=seafile_headers(),
+        params={"p": SEAFILE_DIR},
+        timeout=30
+    )
     if response.status_code != 200:
         raise Exception(f"Upload-Link fehlgeschlagen: {response.status_code} {response.text}")
     return response.text.strip('"')
@@ -204,7 +210,7 @@ def upload_new_json_file_to_seafile(filename, payload):
         upload_link,
         headers={"Authorization": f"Token {SEAFILE_TOKEN}"},
         files={"file": (filename, file_bytes, "application/json")},
-        data={"parent_dir": "/", "replace": "1"},
+        data={"parent_dir": SEAFILE_DIR, "replace": "1"},
         timeout=60
     )
     if response.status_code != 200:
