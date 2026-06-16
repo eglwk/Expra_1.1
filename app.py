@@ -48,7 +48,16 @@ CONVERSATION_DURATION_SECONDS = int(
 DAY_SWITCH_PAUSE_SECONDS = int(
     os.environ.get(
         "DAY_SWITCH_PAUSE_SECONDS",
-        str(int(float(os.environ.get("DAY_SWITCH_PAUSE_MINUTES", "1")) * 60))
+        str(int(float(os.environ.get("DAY_SWITCH_PAUSE_MINUTES", "3")) * 60))
+    )
+)
+
+# Automatische Hintergrund-Schließung nach 2 Stunden, wenn ein Tag gestartet,
+# aber nicht aktiv beendet wurde.
+AUTO_CLOSE_AFTER_SECONDS = int(
+    os.environ.get(
+        "AUTO_CLOSE_AFTER_SECONDS",
+        str(6 * 60)
     )
 )
 
@@ -298,7 +307,7 @@ def clean_history(chat_history):
             "content": content,
             "study_day": int(msg.get("study_day", 1) or 1),
         }
-        for key in ("timestamp", "chat_started_at", "conversation_closed_at", "is_closing_message"):
+        for key in ("timestamp", "chat_started_at", "conversation_closed_at", "is_closing_message", "auto_closed"):
             if key in msg:
                 item[key] = msg[key]
         cleaned.append(item)
@@ -346,18 +355,62 @@ def chat_time_limit_reached(chat_history):
     return get_chat_elapsed_seconds(chat_history) >= CONVERSATION_DURATION_SECONDS
 
 
+def chat_auto_close_limit_reached(chat_history):
+    if not chat_history or chat_is_closed(chat_history):
+        return False
+    return get_chat_elapsed_seconds(chat_history) >= AUTO_CLOSE_AFTER_SECONDS
+
+
+def chat_was_auto_closed(chat_history):
+    for msg in reversed(chat_history):
+        if msg.get("conversation_closed_at"):
+            return bool(msg.get("auto_closed"))
+    return False
+
+
 def next_day_is_unlocked(chat_history):
     closed_at = get_chat_closed_at(chat_history)
     if not closed_at:
         return False
+    if chat_was_auto_closed(chat_history):
+        return True
     elapsed_after_closing = (datetime.now(timezone.utc) - closed_at).total_seconds()
     return elapsed_after_closing >= DAY_SWITCH_PAUSE_SECONDS
+
+
+def auto_close_day_if_needed(study_day, chat_history):
+    study_day = int(study_day)
+    chat_history = clean_history(chat_history)
+
+    if study_day >= MAX_STUDY_DAY:
+        return chat_history, False
+
+    if not chat_auto_close_limit_reached(chat_history):
+        return chat_history, False
+
+    reply = get_closing_assistant_message(study_day)
+    closed_at = utc_now_iso()
+    chat_history.append({
+        "role": "assistant",
+        "content": reply,
+        "timestamp": closed_at,
+        "conversation_closed_at": closed_at,
+        "is_closing_message": True,
+        "auto_closed": True,
+        "study_day": study_day
+    })
+    save_last_day_memory(chat_history, study_day)
+    save_chat_history_to_seafile(chat_history, study_day)
+
+    return chat_history, True
 
 
 def get_active_study_day(chat_history=None):
     # Mit Login/Seafile ist Seafile die Quelle der Wahrheit.
     for day in range(1, MAX_STUDY_DAY + 1):
         day_history = load_chat_history_from_seafile(day)
+        day_history, _ = auto_close_day_if_needed(day, day_history)
+
         if not day_history:
             return day
         if not next_day_is_unlocked(day_history):
@@ -586,6 +639,28 @@ def ask_mistral(chat_history, study_day):
     return result["choices"][0]["message"]["content"]
 
 
+def ensure_initial_chat_history(study_day, chat_history):
+    if chat_history:
+        return chat_history, None, False
+
+    now = utc_now_iso()
+    reply = get_initial_assistant_message(study_day, chat_history)
+    initial_entry = {
+        "role": "assistant",
+        "content": reply,
+        "timestamp": now,
+        "chat_started_at": now,
+        "study_day": study_day
+    }
+    if int(study_day) == 5:
+        initial_entry["conversation_closed_at"] = now
+        initial_entry["is_closing_message"] = True
+    chat_history.append(initial_entry)
+    save_chat_history_to_seafile(chat_history, study_day)
+
+    return chat_history, reply, True
+
+
 def timer_payload(chat_history, study_day):
     day_history = get_day_history(chat_history, study_day)
     started_at = get_chat_started_at(day_history)
@@ -597,10 +672,12 @@ def timer_payload(chat_history, study_day):
         "chat_started_at": started_at.isoformat() if started_at else None,
         "duration_seconds": CONVERSATION_DURATION_SECONDS,
         "pause_seconds": DAY_SWITCH_PAUSE_SECONDS,
+        "auto_close_after_seconds": AUTO_CLOSE_AFTER_SECONDS,
         "elapsed_seconds": get_chat_elapsed_seconds(day_history),
         "conversation_closed_at": closed_at.isoformat() if closed_at else None,
         "time_limit_reached": chat_time_limit_reached(day_history),
         "expired": chat_is_closed(day_history),
+        "auto_closed": chat_was_auto_closed(day_history),
         "next_day_unlocked": next_day_is_unlocked(day_history)
     }
 
@@ -702,21 +779,7 @@ def load_chat():
         # Jeder neue Studientag startet automatisch mit seiner eigenen
         # initialen Lumi-Nachricht. Diese Nachricht wird in der Tagesdatei
         # gespeichert und anschließend im Browser angezeigt.
-        if not chat_history:
-            now = utc_now_iso()
-            reply = get_initial_assistant_message(study_day, chat_history)
-            initial_entry = {
-                "role": "assistant",
-                "content": reply,
-                "timestamp": now,
-                "chat_started_at": now,
-                "study_day": study_day
-            }
-            if int(study_day) == 5:
-                initial_entry["conversation_closed_at"] = now
-                initial_entry["is_closing_message"] = True
-            chat_history.append(initial_entry)
-            save_chat_history_to_seafile(chat_history, study_day)
+        chat_history, reply, created = ensure_initial_chat_history(study_day, chat_history)
 
         # An den Browser wird nur der aktuelle Tag zurückgegeben.
         # Frühere Tage bleiben in Seafile gespeichert und werden nur im
@@ -746,20 +809,7 @@ def start_chat():
                 **timer_payload(chat_history, study_day)
             })
 
-        now = utc_now_iso()
-        reply = get_initial_assistant_message(study_day, chat_history)
-        initial_entry = {
-            "role": "assistant",
-            "content": reply,
-            "timestamp": now,
-            "chat_started_at": now,
-            "study_day": study_day
-        }
-        if int(study_day) == 5:
-            initial_entry["conversation_closed_at"] = now
-            initial_entry["is_closing_message"] = True
-        chat_history.append(initial_entry)
-        save_chat_history_to_seafile(chat_history, study_day)
+        chat_history, reply, created = ensure_initial_chat_history(study_day, chat_history)
 
         return jsonify({
             "already_started": False,
@@ -786,6 +836,7 @@ def send():
     try:
         study_day = get_active_study_day()
         chat_history = load_chat_history_from_seafile(study_day)
+        chat_history, initial_reply, initial_created = ensure_initial_chat_history(study_day, chat_history)
 
         if chat_is_closed(chat_history):
             return jsonify({
@@ -904,4 +955,3 @@ def test_models():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
-
