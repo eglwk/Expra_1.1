@@ -46,12 +46,12 @@ CONVERSATION_DURATION_SECONDS = int(
     )
 )
 
-# Nach 10 Minuten ab initialer Nachricht wird der jeweilige Tageschat
+# Nach 60 Minuten ab initialer Nachricht wird der jeweilige Tageschat
 # automatisch als geschlossen markiert, wie ansonsten nach der Endnachricht.
 INITIAL_AUTO_CLOSE_SECONDS = int(
     os.environ.get(
         "INITIAL_AUTO_CLOSE_SECONDS",
-        str(int(float(os.environ.get("INITIAL_AUTO_CLOSE_MINUTES", "10")) * 60))
+        str(int(float(os.environ.get("INITIAL_AUTO_CLOSE_MINUTES", "60")) * 60))
     )
 )
 
@@ -59,7 +59,7 @@ INITIAL_AUTO_CLOSE_SECONDS = int(
 DAY_SWITCH_PAUSE_SECONDS = int(
     os.environ.get(
         "DAY_SWITCH_PAUSE_SECONDS",
-        str(int(float(os.environ.get("DAY_SWITCH_PAUSE_MINUTES", "1")) * 60))
+        str(int(float(os.environ.get("DAY_SWITCH_PAUSE_MINUTES", "60")) * 60))
     )
 )
 
