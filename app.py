@@ -7,7 +7,7 @@ import requests
 import psycopg2
 import psycopg2.extras
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 load_dotenv()
 
@@ -46,12 +46,12 @@ CONVERSATION_DURATION_SECONDS = int(
     )
 )
 
-# Nach 60 Minuten ab initialer Nachricht wird der jeweilige Tageschat
+# Nach 10 Minuten ab initialer Nachricht wird der jeweilige Tageschat
 # automatisch als geschlossen markiert, wie ansonsten nach der Endnachricht.
 INITIAL_AUTO_CLOSE_SECONDS = int(
     os.environ.get(
         "INITIAL_AUTO_CLOSE_SECONDS",
-        str(int(float(os.environ.get("INITIAL_AUTO_CLOSE_MINUTES", "60")) * 60))
+        str(int(float(os.environ.get("INITIAL_AUTO_CLOSE_MINUTES", "10")) * 60))
     )
 )
 
@@ -59,7 +59,7 @@ INITIAL_AUTO_CLOSE_SECONDS = int(
 DAY_SWITCH_PAUSE_SECONDS = int(
     os.environ.get(
         "DAY_SWITCH_PAUSE_SECONDS",
-        str(int(float(os.environ.get("DAY_SWITCH_PAUSE_MINUTES", "60")) * 60))
+        str(int(float(os.environ.get("DAY_SWITCH_PAUSE_MINUTES", "2")) * 60))
     )
 )
 
@@ -327,6 +327,10 @@ def get_day_history(chat_history, study_day):
     ]
 
 
+def has_user_message(chat_history):
+    return any(msg.get("role") == "user" for msg in clean_history(chat_history))
+
+
 def get_chat_started_at(chat_history):
     for msg in chat_history:
         started_at = msg.get("chat_started_at") or msg.get("timestamp")
@@ -555,9 +559,13 @@ def get_closing_assistant_message(study_day):
     return CLOSING_ASSISTANT_MESSAGES.get(study_day, CLOSING_ASSISTANT_MESSAGES[1])
 
 
-def close_chat_with_closing_message(chat_history, study_day):
+def close_chat_with_closing_message(chat_history, study_day, closed_at=None):
     reply = get_closing_assistant_message(study_day)
-    closed_at = utc_now_iso()
+
+    if closed_at is None:
+        closed_at = utc_now_iso()
+    elif isinstance(closed_at, datetime):
+        closed_at = closed_at.astimezone(timezone.utc).isoformat()
 
     chat_history.append({
         "role": "assistant",
@@ -583,8 +591,26 @@ def auto_close_chat_after_initial_timeout(chat_history, study_day):
     if chat_is_closed(chat_history):
         return chat_history
 
-    if initial_auto_close_limit_reached(chat_history):
-        close_chat_with_closing_message(chat_history, study_day)
+    # Anpassung:
+    # Ein Tag wird nur automatisch geschlossen, wenn an diesem Tag
+    # mindestens eine Nutzer-Nachricht existiert.
+    # Dadurch kann ein neu automatisch gestarteter Tag mit nur der
+    # initialen Lumi-Nachricht nicht direkt wieder geschlossen werden.
+    if not has_user_message(chat_history):
+        return chat_history
+
+    started_at = get_chat_started_at(chat_history)
+    if not started_at:
+        return chat_history
+
+    auto_closed_at = started_at + timedelta(seconds=INITIAL_AUTO_CLOSE_SECONDS)
+
+    if datetime.now(timezone.utc) >= auto_closed_at:
+        close_chat_with_closing_message(
+            chat_history,
+            study_day,
+            closed_at=auto_closed_at
+        )
 
     return chat_history
 
